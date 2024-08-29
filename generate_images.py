@@ -12,17 +12,24 @@ logging.basicConfig(
 
 # Load prompts from prompts.jsonl
 with open("prompts.jsonl", "r") as file:
-    prompts = [json.loads(line) for line in file]
+    all_prompts = [json.loads(line) for line in file]
 
+BATCH_SIZE = 20
 PENDING_PREDICTIONS = []
-PREDICTIONS = {}
 
-# Generate images in batches of 20
-BATCH_SIZE = 10
-for i in range(0, len(prompts), BATCH_SIZE):
-    batch = prompts[i : i + BATCH_SIZE]
+# Generate images in batches
+for i in range(0, len(all_prompts), BATCH_SIZE):
+    batch_prompts = all_prompts[i : i + BATCH_SIZE]
 
-    for prompt in batch:
+    # Generate images for the current batch
+    for prompt in batch_prompts:
+        output_dir = f"./outputs/{prompt['caption_source']}"
+        output_path = f"{output_dir}/{prompt['prompt_sha']}-{prompt['seed']}.webp"
+
+        if os.path.exists(output_path):
+            logging.info(f"Image already exists: {output_path}. Skipping generation.")
+            continue
+
         logging.info("Generating image for prompt: %s", prompt["prompt"])
 
         prediction_params = {
@@ -35,42 +42,40 @@ for i in range(0, len(prompts), BATCH_SIZE):
             "num_inference_steps": 4,
             "output_format": "webp",
             "output_quality": 80,
+            "disable_safety_checker": True,
         }
 
         prediction = replicate.predictions.create(
             prompt["model_version"], input=prediction_params
         )
         PENDING_PREDICTIONS.append(
-            f"{prediction.id}::{prompt['prompt_sha']}::{prompt['seed']}"
+            f"{prediction.id}::{prompt['prompt_sha']}::{prompt['caption_source']}::{prompt['seed']}"
         )
 
-    while len(PENDING_PREDICTIONS) > 0:
+    # Process the current batch
+    while PENDING_PREDICTIONS:
         logging.info("Pending predictions count: %d", len(PENDING_PREDICTIONS))
         for pending_prediction in PENDING_PREDICTIONS[
             :
         ]:  # Create a copy of the list to iterate over
-            prediction_id, prompt_sha, seed = pending_prediction.split("::")
+            prediction_id, prompt_sha, caption_source, seed = pending_prediction.split(
+                "::"
+            )
 
             logging.info("Fetching prediction for ID: %s", prediction_id)
-            # fetch prediction
             prediction = replicate.predictions.get(prediction_id)
 
-            # if prediction is successful, fetch the output image
             if prediction.status == "succeeded":
                 logging.info("Prediction succeeded for ID: %s", prediction_id)
                 prediction_output_url = prediction.output[0]
 
-                # Create output directory if it doesn't exist
-                output_dir = f"./outputs/{prompt['caption_source']}"
+                output_dir = f"./outputs/{caption_source}"
                 os.makedirs(output_dir, exist_ok=True)
 
-                # Save the output image directly to disk without buffering in memory
                 output_path = f"{output_dir}/{prompt_sha}-{seed}.webp"
                 urllib.request.urlretrieve(prediction_output_url, output_path)
 
-                # remove prediction from the download queue
                 PENDING_PREDICTIONS.remove(pending_prediction)
-
                 logging.info("Image saved to %s", output_path)
 
             elif prediction.status == "failed":
@@ -87,8 +92,9 @@ for i in range(0, len(prompts), BATCH_SIZE):
                     prediction.status,
                 )
 
-        time.sleep(5)  # Wait for 5 seconds before checking again
+        if PENDING_PREDICTIONS:
+            time.sleep(5)  # Wait for 5 seconds before checking again
 
-    logging.info(f"Batch {i//BATCH_SIZE + 1} completed")
-    PENDING_PREDICTIONS.clear()  # Clear PENDING_PREDICTIONS after each batch
-    time.sleep(5)  # Wait for 10 seconds between batches
+    logging.info(
+        f"Completed batch {i//BATCH_SIZE + 1} of {(len(all_prompts) - 1)//BATCH_SIZE + 1}"
+    )
