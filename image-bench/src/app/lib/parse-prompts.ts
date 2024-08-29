@@ -5,6 +5,7 @@ interface Prompt {
   caption_source: string;
   prompt_sha: string;
   seed: number;
+  prompt: string;
 }
 
 export function parsePrompts(): Prompt[] {
